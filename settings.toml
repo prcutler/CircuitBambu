@@ -1,0 +1,6 @@
+CIRCUITPY_WIFI_SSID = "your_wifi_ssid"
+CIRCUITPY_WIFI_PASSWORD = "your_wifi_password"
+BAMBU_IP = "printer_ip_address"
+BAMBU_SERIAL_NUMBER = "printer_serial_number"
+LAN_ACCESS_CODE = "8_characters"
+BAMBU_ACCESS_TOKEN = "your_cloud_token"
