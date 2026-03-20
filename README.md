@@ -4,8 +4,6 @@
 
 [![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=fff)](#)
 
-[<img src="https://badges.ws/badge/Version-1.0.0-red" />](https://your-project.link)
-
 # CircuitBambu
 Monitor your Bambu Labs 3D printer using CircuitPython
 
