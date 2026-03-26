@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 
 import adafruit_connection_manager
@@ -96,11 +97,118 @@ radio = wifi.radio
 pool = adafruit_connection_manager.get_radio_socketpool(radio)
 ssl_context = adafruit_connection_manager.get_radio_ssl_context(radio)
 
-while True:
+print("Connecting to AP...")
+wifi.radio.connect(
+    os.getenv("CIRCUITPY_WIFI_SSID"), os.getenv("CIRCUITPY_WIFI_PASSWORD")
+)
+print(f"Connected to {os.getenv('CIRCUITPY_WIFI_SSID')}")
+print(f"My IP address: {wifi.radio.ipv4_address}")
 
-    print("Connecting to AP...")
-    wifi.radio.connect(
-        os.getenv("CIRCUITPY_WIFI_SSID"), os.getenv("CIRCUITPY_WIFI_PASSWORD")
-    )
-    print(f"Connected to {os.getenv('CIRCUITPY_WIFI_SSID')}")
-    print(f"My IP address: {wifi.radio.ipv4_address}")
+# Bambu MQTT settings
+bambu_ip = os.getenv("BAMBU_IP")
+device_id = os.getenv("DEVICE_ID")
+lan_access_code = os.getenv("LAN_ACCESS_CODE")
+
+report_topic = f"device/{device_id}/report"
+request_topic = f"device/{device_id}/request"
+
+sequence_id = 0
+
+
+def on_connect(client, userdata, flags, rc):
+    print(f"Connected to Bambu printer MQTT broker")
+    client.subscribe(report_topic)
+    print(f"Subscribed to {report_topic}")
+    # Request full status update
+    request_pushall(client)
+
+
+def on_disconnect(client, userdata, rc):
+    print(f"Disconnected from MQTT broker")
+
+
+def on_message(client, topic, message):
+    print(f"Message on {topic}")
+    try:
+        data = json.loads(message)
+        if "print" in data:
+            print_data = data["print"]
+            if "gcode_state" in print_data:
+                print(f"  State: {print_data['gcode_state']}")
+            if "mc_percent" in print_data:
+                print(f"  Progress: {print_data['mc_percent']}%")
+            if "mc_remaining_time" in print_data:
+                print(f"  Remaining: {print_data['mc_remaining_time']} min")
+            if "nozzle_temper" in print_data:
+                print(f"  Nozzle temp: {print_data['nozzle_temper']}C")
+            if "bed_temper" in print_data:
+                print(f"  Bed temp: {print_data['bed_temper']}C")
+    except (ValueError, KeyError) as e:
+        print(f"  Error parsing message: {e}")
+
+
+def request_pushall(client):
+    global sequence_id
+    pushall = json.dumps({
+        "pushing": {
+            "sequence_id": str(sequence_id),
+            "command": "pushall",
+            "version": 1,
+            "push_target": 1,
+        }
+    })
+    client.publish(request_topic, pushall)
+    sequence_id += 1
+    print("Requested full status update")
+
+
+# Set up MQTT client
+mqtt_client = MQTT.MQTT(
+    broker=bambu_ip,
+    port=8883,
+    username="bblp",
+    password=lan_access_code,
+    socket_pool=pool,
+    ssl_context=ssl_context,
+    is_ssl=True,
+)
+
+mqtt_client.on_connect = on_connect
+mqtt_client.on_disconnect = on_disconnect
+mqtt_client.on_message = on_message
+
+print(f"Connecting to Bambu printer at {bambu_ip}...")
+mqtt_client.connect()
+
+
+async def mqtt_loop():
+    while True:
+        try:
+            mqtt_client.loop(timeout=1)
+        except Exception as e:
+            print(f"MQTT loop error: {e}")
+            try:
+                mqtt_client.reconnect()
+            except Exception as re:
+                print(f"Reconnect failed: {re}")
+                await asyncio.sleep(5)
+        await asyncio.sleep(0.1)
+
+
+async def request_status():
+    while True:
+        await asyncio.sleep(60)
+        try:
+            request_pushall(mqtt_client)
+        except Exception as e:
+            print(f"Status request error: {e}")
+
+
+async def main():
+    mqtt_task = asyncio.create_task(mqtt_loop())
+    status_task = asyncio.create_task(request_status())
+    await asyncio.gather(mqtt_task, status_task)
+
+
+asyncio.run(main())
+
