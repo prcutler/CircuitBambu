@@ -109,6 +109,7 @@ bambu_ip = os.getenv("BAMBU_IP")
 device_id = os.getenv("DEVICE_ID")
 lan_access_code = os.getenv("LAN_ACCESS_CODE")
 
+
 report_topic = f"device/{device_id}/report"
 request_topic = f"device/{device_id}/request"
 
