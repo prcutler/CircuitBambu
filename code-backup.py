@@ -106,7 +106,7 @@ print(f"My IP address: {wifi.radio.ipv4_address}")
 
 # Bambu MQTT settings
 bambu_ip = "192.168.1.26"
-device_id = "01S09A2B1100104"
+device_id = os.getenv("DEVICE_ID")
 lan_access_code = os.getenv("LAN_ACCESS_CODE")
 user_id = os.getenv("USER_ID")
 bambu_access_token = os.getenv("BAMBU_ACCESS_TOKEN")
