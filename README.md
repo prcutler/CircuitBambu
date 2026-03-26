@@ -19,7 +19,7 @@ To access your credentials:
 
 1. Login to [MakerWorld](https://makerworld.com/)
 2. Open the `dev-tools` (F12 in most browsers) and select `Application > Cookies > https://makerworld.com`
-3. Copy the `token` string and save as `ACCESS_TOKEN`
+3. Copy the `token` string and save as `BAMBU_ACCESS_TOKEN` in `settings.toml`
 4. Access [/api/v1/design-user-service/my/preference](https://makerworld.com/api/v1/design-user-service/my/preference) and copy `uid` as `USER_ID`
 5. Access [/api/v1/iot-service/api/user/bind](https://makerworld.com/api/v1/iot-service/api/user/bind) and copy your `dev_id` as `DEVICE_ID`
 6. Connect to the MQTT server with the following information.
