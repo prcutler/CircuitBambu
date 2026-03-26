@@ -171,6 +171,7 @@ mqtt_client = MQTT.MQTT(
     socket_pool=pool,
     ssl_context=ssl_context,
     is_ssl=True,
+    socket_timeout=0.01  # apparently socket recvs even block asyncio
 )
 
 mqtt_client.on_connect = on_connect
