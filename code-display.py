@@ -89,14 +89,39 @@ i2c.deinit()
 fb = dotclockframebuffer.DotClockFramebuffer(**tft_pins, **tft_timings)
 display = FramebufferDisplay(fb, auto_refresh=True)
 
-# Colors
+# Colors (inspired by BambuHelper)
 COLOR_WHITE = 0xFFFFFF
+COLOR_DIM = 0xAAAAAA
+COLOR_DARK = 0x666666
 COLOR_GREEN = 0x00FF00
 COLOR_YELLOW = 0xFFFF00
 COLOR_CYAN = 0x00FFFF
-COLOR_ORANGE = 0xFF8800
-COLOR_GRAY = 0x888888
+COLOR_NOZZLE_ORANGE = 0xFFAA00
+COLOR_BED_CYAN = 0x00DDFF
+COLOR_RED = 0xFF0000
+COLOR_GOLD = 0xFFCC00
+COLOR_FAN_BLUE = 0x4488FF
+COLOR_TRACK = 0x333333
 COLOR_BG = 0x000000
+
+# Friendly state names and colors
+STATE_MAP = {
+    "IDLE": ("Idle", COLOR_GREEN),
+    "RUNNING": ("Printing", COLOR_GREEN),
+    "PAUSE": ("Paused", COLOR_YELLOW),
+    "FINISH": ("Finished", COLOR_GREEN),
+    "PREPARE": ("Preparing", COLOR_CYAN),
+    "FAILED": ("ERROR!", COLOR_RED),
+    "SLICING": ("Slicing", COLOR_CYAN),
+}
+
+# Speed level names
+SPEED_MAP = {
+    1: "Silent",
+    2: "Standard",
+    3: "Sport",
+    4: "Ludicrous",
+}
 
 # Build display layout
 main_group = displayio.Group()
@@ -108,71 +133,213 @@ bg_palette[0] = COLOR_BG
 bg_sprite = displayio.TileGrid(bg_bitmap, pixel_shader=bg_palette)
 main_group.append(bg_sprite)
 
-# Title
+
+def make_bar(x, y, w, h, fill_color, track_color=COLOR_TRACK):
+    group = displayio.Group()
+    # Track (background)
+    track_bmp = displayio.Bitmap(w, h, 1)
+    track_pal = displayio.Palette(1)
+    track_pal[0] = track_color
+    track_tg = displayio.TileGrid(track_bmp, pixel_shader=track_pal, x=x, y=y)
+    group.append(track_tg)
+    # Fill (foreground)
+    fill_bmp = displayio.Bitmap(1, h, 1)
+    fill_pal = displayio.Palette(1)
+    fill_pal[0] = fill_color
+    fill_tg = displayio.TileGrid(fill_bmp, pixel_shader=fill_pal, x=x, y=y)
+    group.append(fill_tg)
+    return group, fill_tg, w, h
+
+
+def update_bar(fill_tg, percent, bar_w, bar_h):
+    fill_w = max(1, int(bar_w * percent / 100))
+    fill_tg.bitmap = displayio.Bitmap(fill_w, bar_h, 1)
+    fill_tg.bitmap.fill(0)
+
+
+# --- Top progress bar (thin, full width) ---
+top_bar_group, top_bar_fill, TOP_BAR_W, TOP_BAR_H = make_bar(
+    10, 4, 460, 6, COLOR_GOLD
+)
+main_group.append(top_bar_group)
+
+# --- Header row: title + state ---
 title_label = label.Label(
     terminalio.FONT, text="Bambu Printer", color=COLOR_GREEN,
-    anchor_point=(0.5, 0), anchored_position=(240, 30), scale=3
+    anchor_point=(0, 0), anchored_position=(20, 20), scale=3
 )
 main_group.append(title_label)
 
-# Status label definitions: (name, default_text, color, y_position)
-LABEL_DEFS = [
-    ("state", "State: Connecting...", COLOR_WHITE, 100),
-    ("progress", "Progress: --", COLOR_CYAN, 150),
-    ("remaining", "Remaining: --", COLOR_YELLOW, 200),
-    ("nozzle", "Nozzle: --", COLOR_ORANGE, 250),
-    ("bed", "Bed: --", COLOR_ORANGE, 300),
-    ("layer", "Layer: --", COLOR_GRAY, 350),
-    ("file", "", COLOR_GRAY, 400),
-]
-
 labels = {}
-for name, default_text, color, y_pos in LABEL_DEFS:
-    lbl = label.Label(
-        terminalio.FONT, text=default_text, color=color,
-        anchor_point=(0, 0), anchored_position=(40, y_pos), scale=2
-    )
-    main_group.append(lbl)
-    labels[name] = lbl
+
+labels["state"] = label.Label(
+    terminalio.FONT, text="Connecting...", color=COLOR_DIM,
+    anchor_point=(1.0, 0), anchored_position=(460, 24), scale=2
+)
+main_group.append(labels["state"])
+
+# --- File name ---
+labels["file"] = label.Label(
+    terminalio.FONT, text="", color=COLOR_DARK,
+    anchor_point=(0, 0), anchored_position=(20, 60), scale=2
+)
+main_group.append(labels["file"])
+
+# --- Progress section ---
+labels["progress_pct"] = label.Label(
+    terminalio.FONT, text="--%", color=COLOR_WHITE,
+    anchor_point=(0, 0), anchored_position=(20, 95), scale=4
+)
+main_group.append(labels["progress_pct"])
+
+labels["eta"] = label.Label(
+    terminalio.FONT, text="ETA: --", color=COLOR_DIM,
+    anchor_point=(1.0, 0), anchored_position=(460, 100), scale=2
+)
+main_group.append(labels["eta"])
+
+# Main progress bar
+main_bar_group, main_bar_fill, MAIN_BAR_W, MAIN_BAR_H = make_bar(
+    20, 140, 440, 14, COLOR_GOLD
+)
+main_group.append(main_bar_group)
+
+# --- Separator ---
+sep1_bmp = displayio.Bitmap(440, 1, 1)
+sep1_pal = displayio.Palette(1)
+sep1_pal[0] = COLOR_TRACK
+sep1_tg = displayio.TileGrid(sep1_bmp, pixel_shader=sep1_pal, x=20, y=168)
+main_group.append(sep1_tg)
+
+# --- Temperature section ---
+temp_section_label = label.Label(
+    terminalio.FONT, text="TEMPERATURES", color=COLOR_DARK,
+    anchor_point=(0, 0), anchored_position=(20, 180), scale=1
+)
+main_group.append(temp_section_label)
+
+# Nozzle
+labels["nozzle_label"] = label.Label(
+    terminalio.FONT, text="Nozzle", color=COLOR_DIM,
+    anchor_point=(0, 0), anchored_position=(20, 200), scale=2
+)
+main_group.append(labels["nozzle_label"])
+
+labels["nozzle_temp"] = label.Label(
+    terminalio.FONT, text="--/--C", color=COLOR_NOZZLE_ORANGE,
+    anchor_point=(1.0, 0), anchored_position=(460, 200), scale=2
+)
+main_group.append(labels["nozzle_temp"])
+
+nozzle_bar_group, nozzle_bar_fill, NOZZLE_BAR_W, NOZZLE_BAR_H = make_bar(
+    20, 225, 440, 10, COLOR_NOZZLE_ORANGE
+)
+main_group.append(nozzle_bar_group)
+
+# Bed
+labels["bed_label"] = label.Label(
+    terminalio.FONT, text="Bed", color=COLOR_DIM,
+    anchor_point=(0, 0), anchored_position=(20, 248), scale=2
+)
+main_group.append(labels["bed_label"])
+
+labels["bed_temp"] = label.Label(
+    terminalio.FONT, text="--/--C", color=COLOR_BED_CYAN,
+    anchor_point=(1.0, 0), anchored_position=(460, 248), scale=2
+)
+main_group.append(labels["bed_temp"])
+
+bed_bar_group, bed_bar_fill, BED_BAR_W, BED_BAR_H = make_bar(
+    20, 273, 440, 10, COLOR_BED_CYAN
+)
+main_group.append(bed_bar_group)
+
+# --- Separator ---
+sep2_bmp = displayio.Bitmap(440, 1, 1)
+sep2_pal = displayio.Palette(1)
+sep2_pal[0] = COLOR_TRACK
+sep2_tg = displayio.TileGrid(sep2_bmp, pixel_shader=sep2_pal, x=20, y=296)
+main_group.append(sep2_tg)
+
+# --- Fans section ---
+fan_section_label = label.Label(
+    terminalio.FONT, text="FANS", color=COLOR_DARK,
+    anchor_point=(0, 0), anchored_position=(20, 308), scale=1
+)
+main_group.append(fan_section_label)
+
+# Part fan
+labels["part_fan_label"] = label.Label(
+    terminalio.FONT, text="Part Fan", color=COLOR_DIM,
+    anchor_point=(0, 0), anchored_position=(20, 328), scale=2
+)
+main_group.append(labels["part_fan_label"])
+
+labels["part_fan_pct"] = label.Label(
+    terminalio.FONT, text="--%", color=COLOR_FAN_BLUE,
+    anchor_point=(1.0, 0), anchored_position=(460, 328), scale=2
+)
+main_group.append(labels["part_fan_pct"])
+
+part_fan_bar_group, part_fan_bar_fill, PFAN_BAR_W, PFAN_BAR_H = make_bar(
+    20, 353, 440, 10, COLOR_FAN_BLUE
+)
+main_group.append(part_fan_bar_group)
+
+# Aux fan
+labels["aux_fan_label"] = label.Label(
+    terminalio.FONT, text="Aux Fan", color=COLOR_DIM,
+    anchor_point=(0, 0), anchored_position=(20, 375), scale=2
+)
+main_group.append(labels["aux_fan_label"])
+
+labels["aux_fan_pct"] = label.Label(
+    terminalio.FONT, text="--%", color=COLOR_FAN_BLUE,
+    anchor_point=(1.0, 0), anchored_position=(460, 375), scale=2
+)
+main_group.append(labels["aux_fan_pct"])
+
+aux_fan_bar_group, aux_fan_bar_fill, AFAN_BAR_W, AFAN_BAR_H = make_bar(
+    20, 400, 440, 10, COLOR_FAN_BLUE
+)
+main_group.append(aux_fan_bar_group)
+
+# Chamber fan
+labels["cham_fan_label"] = label.Label(
+    terminalio.FONT, text="Chamber", color=COLOR_DIM,
+    anchor_point=(0, 0), anchored_position=(20, 422), scale=2
+)
+main_group.append(labels["cham_fan_label"])
+
+labels["cham_fan_pct"] = label.Label(
+    terminalio.FONT, text="--%", color=COLOR_FAN_BLUE,
+    anchor_point=(1.0, 0), anchored_position=(460, 422), scale=2
+)
+main_group.append(labels["cham_fan_pct"])
+
+cham_fan_bar_group, cham_fan_bar_fill, CFAN_BAR_W, CFAN_BAR_H = make_bar(
+    20, 447, 440, 10, COLOR_FAN_BLUE
+)
+main_group.append(cham_fan_bar_group)
+
+# --- Bottom info bar ---
+labels["layer"] = label.Label(
+    terminalio.FONT, text="Layer: --", color=COLOR_DIM,
+    anchor_point=(0, 0), anchored_position=(20, 466), scale=1
+)
+main_group.append(labels["layer"])
+
+labels["speed"] = label.Label(
+    terminalio.FONT, text="", color=COLOR_DIM,
+    anchor_point=(1.0, 0), anchored_position=(460, 466), scale=1
+)
+main_group.append(labels["speed"])
 
 display.root_group = main_group
 
-# Progress bar
-BAR_X = 40
-BAR_Y = 440
-BAR_W = 400
-BAR_H = 20
-
-bar_outline = displayio.Bitmap(BAR_W, BAR_H, 1)
-bar_outline_palette = displayio.Palette(1)
-bar_outline_palette[0] = COLOR_GRAY
-bar_outline_tg = displayio.TileGrid(bar_outline, pixel_shader=bar_outline_palette, x=BAR_X, y=BAR_Y)
-main_group.append(bar_outline_tg)
-
-bar_fill = displayio.Bitmap(1, BAR_H - 4, 1)
-bar_fill_palette = displayio.Palette(1)
-bar_fill_palette[0] = COLOR_GREEN
-bar_fill_tg = displayio.TileGrid(bar_fill, pixel_shader=bar_fill_palette, x=BAR_X + 2, y=BAR_Y + 2)
-main_group.append(bar_fill_tg)
-
-
-def update_progress_bar(percent):
-    """Update the progress bar width based on percentage."""
-    fill_w = max(1, int((BAR_W - 4) * percent / 100))
-    bar_fill_tg.bitmap = displayio.Bitmap(fill_w, BAR_H - 4, 1)
-    bar_fill_tg.bitmap.fill(0)
-
-
-# Friendly state names
-STATE_MAP = {
-    "IDLE": "Idle",
-    "RUNNING": "Printing",
-    "PAUSE": "Paused",
-    "FINISH": "Finished",
-    "PREPARE": "Preparing",
-    "FAILED": "Failed",
-    "SLICING": "Slicing",
-}
+# Max temps for bar scaling
+NOZZLE_MAX_TEMP = 300
+BED_MAX_TEMP = 120
 
 # Set up networking
 print("Connecting to AP...")
@@ -204,14 +371,16 @@ sequence_id = 0
 def update_display(print_data):
     if "gcode_state" in print_data:
         raw_state = print_data["gcode_state"]
-        friendly = STATE_MAP.get(raw_state, raw_state)
-        labels["state"].text = f"State: {friendly}"
+        friendly, color = STATE_MAP.get(raw_state, (raw_state, COLOR_DIM))
+        labels["state"].text = friendly
+        labels["state"].color = color
         print(f"  State: {friendly}")
 
     if "mc_percent" in print_data:
         pct = print_data["mc_percent"]
-        labels["progress"].text = f"Progress: {pct}%"
-        update_progress_bar(pct)
+        labels["progress_pct"].text = f"{pct}%"
+        update_bar(top_bar_fill, pct, TOP_BAR_W, TOP_BAR_H)
+        update_bar(main_bar_fill, pct, MAIN_BAR_W, MAIN_BAR_H)
         print(f"  Progress: {pct}%")
 
     if "mc_remaining_time" in print_data:
@@ -219,28 +388,56 @@ def update_display(print_data):
         hours = mins // 60
         remainder = mins % 60
         if hours > 0:
-            labels["remaining"].text = f"Remaining: {hours}h {remainder}m"
+            labels["eta"].text = f"ETA: {hours}h {remainder}m"
         else:
-            labels["remaining"].text = f"Remaining: {remainder}m"
+            labels["eta"].text = f"ETA: {remainder}m"
         print(f"  Remaining: {mins} min")
 
     if "nozzle_temper" in print_data:
         temp = print_data["nozzle_temper"]
-        target = print_data.get("nozzle_target_temper", "")
+        target = print_data.get("nozzle_target_temper", 0)
         if target:
-            labels["nozzle"].text = f"Nozzle: {temp}/{target}C"
+            labels["nozzle_temp"].text = f"{temp}/{target}C"
+            bar_pct = min(100, int(temp / target * 100)) if target > 0 else 0
         else:
-            labels["nozzle"].text = f"Nozzle: {temp}C"
+            labels["nozzle_temp"].text = f"{temp}C"
+            bar_pct = min(100, int(temp / NOZZLE_MAX_TEMP * 100))
+        update_bar(nozzle_bar_fill, bar_pct, NOZZLE_BAR_W, NOZZLE_BAR_H)
         print(f"  Nozzle: {temp}C")
 
     if "bed_temper" in print_data:
         temp = print_data["bed_temper"]
-        target = print_data.get("bed_target_temper", "")
+        target = print_data.get("bed_target_temper", 0)
         if target:
-            labels["bed"].text = f"Bed: {temp}/{target}C"
+            labels["bed_temp"].text = f"{temp}/{target}C"
+            bar_pct = min(100, int(temp / target * 100)) if target > 0 else 0
         else:
-            labels["bed"].text = f"Bed: {temp}C"
+            labels["bed_temp"].text = f"{temp}C"
+            bar_pct = min(100, int(temp / BED_MAX_TEMP * 100))
+        update_bar(bed_bar_fill, bar_pct, BED_BAR_W, BED_BAR_H)
         print(f"  Bed: {temp}C")
+
+    # Fan speeds (Bambu sends cooling_fan_speed as 0-15, big fans as 0-100)
+    if "cooling_fan_speed" in print_data:
+        raw = print_data["cooling_fan_speed"]
+        pct = int(raw * 100 / 15)
+        labels["part_fan_pct"].text = f"{pct}%"
+        update_bar(part_fan_bar_fill, pct, PFAN_BAR_W, PFAN_BAR_H)
+        print(f"  Part fan: {pct}%")
+
+    if "big_fan1_speed" in print_data:
+        raw = print_data["big_fan1_speed"]
+        pct = int(raw * 100 / 15)
+        labels["aux_fan_pct"].text = f"{pct}%"
+        update_bar(aux_fan_bar_fill, pct, AFAN_BAR_W, AFAN_BAR_H)
+        print(f"  Aux fan: {pct}%")
+
+    if "big_fan2_speed" in print_data:
+        raw = print_data["big_fan2_speed"]
+        pct = int(raw * 100 / 15)
+        labels["cham_fan_pct"].text = f"{pct}%"
+        update_bar(cham_fan_bar_fill, pct, CFAN_BAR_W, CFAN_BAR_H)
+        print(f"  Chamber fan: {pct}%")
 
     if "layer_num" in print_data:
         current = print_data["layer_num"]
@@ -248,10 +445,19 @@ def update_display(print_data):
         labels["layer"].text = f"Layer: {current}/{total}"
         print(f"  Layer: {current}/{total}")
 
-    if "gcode_file" in print_data:
+    if "spd_lvl" in print_data:
+        spd = print_data["spd_lvl"]
+        labels["speed"].text = SPEED_MAP.get(spd, f"Speed: {spd}")
+
+    if "subtask_name" in print_data:
+        filename = print_data["subtask_name"]
+        if len(filename) > 35:
+            filename = filename[:32] + "..."
+        labels["file"].text = filename
+    elif "gcode_file" in print_data:
         filename = print_data["gcode_file"]
-        if len(filename) > 30:
-            filename = filename[:27] + "..."
+        if len(filename) > 35:
+            filename = filename[:32] + "..."
         labels["file"].text = filename
 
 
