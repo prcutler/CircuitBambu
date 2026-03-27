@@ -209,3 +209,6 @@ __marimo__/
 # AI
 .claude/
 CLAUDE.md
+
+# Misc
+.DS_Store
