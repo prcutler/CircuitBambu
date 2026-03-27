@@ -1,6 +1,6 @@
-import asyncio
 import json
 import os
+import time
 
 import adafruit_connection_manager
 import adafruit_minimqtt.adafruit_minimqtt as MQTT
@@ -86,17 +86,95 @@ tft_io_expander = dict(board.TFT_IO_EXPANDER)
 dotclockframebuffer.ioexpander_send_init_sequence(i2c, init_sequence_tl034wvs05, **tft_io_expander)
 i2c.deinit()
 
+fb = dotclockframebuffer.DotClockFramebuffer(**tft_pins, **tft_timings)
+display = FramebufferDisplay(fb, auto_refresh=True)
+
+# Colors
+COLOR_WHITE = 0xFFFFFF
+COLOR_GREEN = 0x00FF00
+COLOR_YELLOW = 0xFFFF00
+COLOR_CYAN = 0x00FFFF
+COLOR_ORANGE = 0xFF8800
+COLOR_GRAY = 0x888888
+COLOR_BG = 0x000000
+
+# Build display layout
+main_group = displayio.Group()
+
+# Background
+bg_bitmap = displayio.Bitmap(480, 480, 1)
+bg_palette = displayio.Palette(1)
+bg_palette[0] = COLOR_BG
+bg_sprite = displayio.TileGrid(bg_bitmap, pixel_shader=bg_palette)
+main_group.append(bg_sprite)
+
+# Title
+title_label = label.Label(
+    terminalio.FONT, text="Bambu Printer", color=COLOR_GREEN,
+    anchor_point=(0.5, 0), anchored_position=(240, 30), scale=3
+)
+main_group.append(title_label)
+
+# Status label definitions: (name, default_text, color, y_position)
+LABEL_DEFS = [
+    ("state", "State: Connecting...", COLOR_WHITE, 100),
+    ("progress", "Progress: --", COLOR_CYAN, 150),
+    ("remaining", "Remaining: --", COLOR_YELLOW, 200),
+    ("nozzle", "Nozzle: --", COLOR_ORANGE, 250),
+    ("bed", "Bed: --", COLOR_ORANGE, 300),
+    ("layer", "Layer: --", COLOR_GRAY, 350),
+    ("file", "", COLOR_GRAY, 400),
+]
+
+labels = {}
+for name, default_text, color, y_pos in LABEL_DEFS:
+    lbl = label.Label(
+        terminalio.FONT, text=default_text, color=color,
+        anchor_point=(0, 0), anchored_position=(40, y_pos), scale=2
+    )
+    main_group.append(lbl)
+    labels[name] = lbl
+
+display.root_group = main_group
+
+# Progress bar
+BAR_X = 40
+BAR_Y = 440
+BAR_W = 400
+BAR_H = 20
+
+bar_outline = displayio.Bitmap(BAR_W, BAR_H, 1)
+bar_outline_palette = displayio.Palette(1)
+bar_outline_palette[0] = COLOR_GRAY
+bar_outline_tg = displayio.TileGrid(bar_outline, pixel_shader=bar_outline_palette, x=BAR_X, y=BAR_Y)
+main_group.append(bar_outline_tg)
+
+bar_fill = displayio.Bitmap(1, BAR_H - 4, 1)
+bar_fill_palette = displayio.Palette(1)
+bar_fill_palette[0] = COLOR_GREEN
+bar_fill_tg = displayio.TileGrid(bar_fill, pixel_shader=bar_fill_palette, x=BAR_X + 2, y=BAR_Y + 2)
+main_group.append(bar_fill_tg)
+
+
+def update_progress_bar(percent):
+    """Update the progress bar width based on percentage."""
+    fill_w = max(1, int((BAR_W - 4) * percent / 100))
+    bar_fill_tg.bitmap = displayio.Bitmap(fill_w, BAR_H - 4, 1)
+    bar_fill_tg.bitmap.fill(0)
+
+
+# Friendly state names
+STATE_MAP = {
+    "IDLE": "Idle",
+    "RUNNING": "Printing",
+    "PAUSE": "Paused",
+    "FINISH": "Finished",
+    "PREPARE": "Preparing",
+    "FAILED": "Failed",
+    "SLICING": "Slicing",
+}
+
 # Set up networking
-ssid = os.getenv("CIRCUITPY_WIFI_SSID")
-password = os.getenv("CIRCUITPY_WIFI_PASSWORD")
-
-radio = wifi.radio
-
-# code to make sure your radio is connected
-
-pool = adafruit_connection_manager.get_radio_socketpool(radio)
-ssl_context = adafruit_connection_manager.get_radio_ssl_context(radio)
-
 print("Connecting to AP...")
 wifi.radio.connect(
     os.getenv("CIRCUITPY_WIFI_SSID"), os.getenv("CIRCUITPY_WIFI_PASSWORD")
@@ -104,11 +182,18 @@ wifi.radio.connect(
 print(f"Connected to {os.getenv('CIRCUITPY_WIFI_SSID')}")
 print(f"My IP address: {wifi.radio.ipv4_address}")
 
-# Bambu MQTT settings
+pool = adafruit_connection_manager.get_radio_socketpool(wifi.radio)
+ssl_context = adafruit_connection_manager.get_radio_ssl_context(wifi.radio)
+
+# Bambu MQTT settings - Local Mode
 bambu_ip = os.getenv("BAMBU_IP")
 device_id = os.getenv("DEVICE_ID")
 lan_access_code = os.getenv("LAN_ACCESS_CODE")
 
+# BAMBU MQTT settings - Bambu Cloud
+bambu_broker = os.getenv("BAMBU_BROKER")
+access_token = os.getenv("BAMBU_ACCESS_TOKEN")
+user_id = os.getenv("USER_ID")
 
 report_topic = f"device/{device_id}/report"
 request_topic = f"device/{device_id}/request"
@@ -116,34 +201,79 @@ request_topic = f"device/{device_id}/request"
 sequence_id = 0
 
 
+def update_display(print_data):
+    if "gcode_state" in print_data:
+        raw_state = print_data["gcode_state"]
+        friendly = STATE_MAP.get(raw_state, raw_state)
+        labels["state"].text = f"State: {friendly}"
+        print(f"  State: {friendly}")
+
+    if "mc_percent" in print_data:
+        pct = print_data["mc_percent"]
+        labels["progress"].text = f"Progress: {pct}%"
+        update_progress_bar(pct)
+        print(f"  Progress: {pct}%")
+
+    if "mc_remaining_time" in print_data:
+        mins = print_data["mc_remaining_time"]
+        hours = mins // 60
+        remainder = mins % 60
+        if hours > 0:
+            labels["remaining"].text = f"Remaining: {hours}h {remainder}m"
+        else:
+            labels["remaining"].text = f"Remaining: {remainder}m"
+        print(f"  Remaining: {mins} min")
+
+    if "nozzle_temper" in print_data:
+        temp = print_data["nozzle_temper"]
+        target = print_data.get("nozzle_target_temper", "")
+        if target:
+            labels["nozzle"].text = f"Nozzle: {temp}/{target}C"
+        else:
+            labels["nozzle"].text = f"Nozzle: {temp}C"
+        print(f"  Nozzle: {temp}C")
+
+    if "bed_temper" in print_data:
+        temp = print_data["bed_temper"]
+        target = print_data.get("bed_target_temper", "")
+        if target:
+            labels["bed"].text = f"Bed: {temp}/{target}C"
+        else:
+            labels["bed"].text = f"Bed: {temp}C"
+        print(f"  Bed: {temp}C")
+
+    if "layer_num" in print_data:
+        current = print_data["layer_num"]
+        total = print_data.get("total_layer_num", "?")
+        labels["layer"].text = f"Layer: {current}/{total}"
+        print(f"  Layer: {current}/{total}")
+
+    if "gcode_file" in print_data:
+        filename = print_data["gcode_file"]
+        if len(filename) > 30:
+            filename = filename[:27] + "..."
+        labels["file"].text = filename
+
+
 def on_connect(client, userdata, flags, rc):
-    print(f"Connected to Bambu printer MQTT broker")
+    print("Connected to Bambu printer MQTT broker")
     client.subscribe(report_topic)
     print(f"Subscribed to {report_topic}")
-    # Request full status update
+    labels["state"].text = "State: Connected"
     request_pushall(client)
 
 
 def on_disconnect(client, userdata, rc):
-    print(f"Disconnected from MQTT broker")
+    print("Disconnected from MQTT broker")
+    labels["state"].text = "State: Disconnected"
 
 
 def on_message(client, topic, message):
-    print(f"Message on {topic}")
     try:
         data = json.loads(message)
-        if "print" in data:
-            print_data = data["print"]
-            if "gcode_state" in print_data:
-                print(f"  State: {print_data['gcode_state']}")
-            if "mc_percent" in print_data:
-                print(f"  Progress: {print_data['mc_percent']}%")
-            if "mc_remaining_time" in print_data:
-                print(f"  Remaining: {print_data['mc_remaining_time']} min")
-            if "nozzle_temper" in print_data:
-                print(f"  Nozzle temp: {print_data['nozzle_temper']}C")
-            if "bed_temper" in print_data:
-                print(f"  Bed temp: {print_data['bed_temper']}C")
+        if "print" not in data:
+            return
+        update_display(data["print"])
     except (ValueError, KeyError) as e:
         print(f"  Error parsing message: {e}")
 
@@ -165,14 +295,13 @@ def request_pushall(client):
 
 # Set up MQTT client
 mqtt_client = MQTT.MQTT(
-    broker=bambu_ip,
+    broker=bambu_broker,
     port=8883,
-    username="bblp",
-    password=lan_access_code,
+    username=user_id,
+    password=access_token,
     socket_pool=pool,
     ssl_context=ssl_context,
     is_ssl=True,
-    socket_timeout=0.01  # apparently socket recvs even block asyncio
 )
 
 mqtt_client.on_connect = on_connect
@@ -182,35 +311,28 @@ mqtt_client.on_message = on_message
 print(f"Connecting to Bambu printer at {bambu_ip}...")
 mqtt_client.connect()
 
+last_status_request = time.monotonic()
+STATUS_INTERVAL = 60
 
-async def mqtt_loop():
-    while True:
+while True:
+    try:
+        mqtt_client.loop(timeout=1)
+    except Exception as e:
+        print(f"MQTT loop error: {e}")
+        labels["state"].text = "State: Reconnecting..."
         try:
-            mqtt_client.loop(timeout=1)
-        except Exception as e:
-            print(f"MQTT loop error: {e}")
-            try:
-                mqtt_client.reconnect()
-            except Exception as re:
-                print(f"Reconnect failed: {re}")
-                await asyncio.sleep(5)
-        await asyncio.sleep(0.1)
+            mqtt_client.reconnect()
+        except Exception as re:
+            print(f"Reconnect failed: {re}")
+            labels["state"].text = "State: Connection lost"
+            time.sleep(5)
 
-
-async def request_status():
-    while True:
-        await asyncio.sleep(60)
+    now = time.monotonic()
+    if now - last_status_request >= STATUS_INTERVAL:
         try:
             request_pushall(mqtt_client)
         except Exception as e:
             print(f"Status request error: {e}")
+        last_status_request = now
 
-
-async def main():
-    mqtt_task = asyncio.create_task(mqtt_loop())
-    status_task = asyncio.create_task(request_status())
-    await asyncio.gather(mqtt_task, status_task)
-
-
-asyncio.run(main())
-
+    time.sleep(0.1)
