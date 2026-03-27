@@ -92,8 +92,6 @@ password = os.getenv("CIRCUITPY_WIFI_PASSWORD")
 
 radio = wifi.radio
 
-# code to make sure your radio is connected
-
 pool = adafruit_connection_manager.get_radio_socketpool(radio)
 ssl_context = adafruit_connection_manager.get_radio_ssl_context(radio)
 
@@ -104,10 +102,15 @@ wifi.radio.connect(
 print(f"Connected to {os.getenv('CIRCUITPY_WIFI_SSID')}")
 print(f"My IP address: {wifi.radio.ipv4_address}")
 
-# Bambu MQTT settings
+# Bambu MQTT settings - Local Mode
 bambu_ip = os.getenv("BAMBU_IP")
 device_id = os.getenv("DEVICE_ID")
 lan_access_code = os.getenv("LAN_ACCESS_CODE")
+
+# BAMBU MQTT settings - Bambu Cloud
+bambu_broker = os.getenv("BAMBU_BROKER")
+access_token = os.getenv("BAMBU_ACCESS_TOKEN")
+user_id = os.getenv("USER_ID")
 
 
 report_topic = f"device/{device_id}/report"
@@ -165,10 +168,10 @@ def request_pushall(client):
 
 # Set up MQTT client
 mqtt_client = MQTT.MQTT(
-    broker=bambu_ip,
+    broker=bambu_broker,
     port=8883,
-    username="bblp",
-    password=lan_access_code,
+    username=user_id,
+    password=access_token,
     socket_pool=pool,
     ssl_context=ssl_context,
     is_ssl=True,
