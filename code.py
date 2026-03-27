@@ -16,6 +16,8 @@ from digitalio import DigitalInOut
 
 # Set up Qualia display
 
+displayio.release_displays()
+
 tft_pins = dict(board.TFT_PINS)
 
 tft_timings = {
@@ -278,16 +280,25 @@ def on_message(client, topic, message):
         print(f"  Error parsing message: {e}")
 
 
+# def request_pushall(client):
+#    global sequence_id
+#    pushall = json.dumps({
+#        "pushing": {
+#            "sequence_id": str(sequence_id),
+#            "command": "pushall",
+#            "version": 1,
+#            "push_target": 1,
+#        }
+#    })
+
 def request_pushall(client):
     global sequence_id
     pushall = json.dumps({
         "pushing": {
-            "sequence_id": str(sequence_id),
             "command": "pushall",
-            "version": 1,
-            "push_target": 1,
         }
     })
+
     client.publish(request_topic, pushall)
     sequence_id += 1
     print("Requested full status update")
@@ -312,7 +323,7 @@ print(f"Connecting to Bambu printer at {bambu_ip}...")
 mqtt_client.connect()
 
 last_status_request = time.monotonic()
-STATUS_INTERVAL = 60
+STATUS_INTERVAL = 30
 
 while True:
     try:
