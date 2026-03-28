@@ -155,10 +155,7 @@ def request_pushall(client):
     global sequence_id
     pushall = json.dumps({
         "pushing": {
-            "sequence_id": str(sequence_id),
             "command": "pushall",
-            "version": 1,
-            "push_target": 1,
         }
     })
     client.publish(request_topic, pushall)
