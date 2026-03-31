@@ -27,34 +27,19 @@ Requires a Bambu Labs 3D printer and Bambu Labs Makerworld account.
 import json
 import os
 import time
-import wifi
+
 import adafruit_connection_manager
 import adafruit_minimqtt.adafruit_minimqtt as MQTT
-
+import wifi
 
 __version__ = "0.0.0+auto.0"
 __repo__ = "https://github.com/prcutler/CircuitPython_bambulabs.git"
 
-
-pool = adafruit_connection_manager.get_radio_socketpool(wifi.radio)
-ssl_context = adafruit_connection_manager.get_radio_ssl_context(wifi.radio)
-
 # BAMBU MQTT settings - Bambu Cloud
-bambu_broker = os.getenv("BAMBU_BROKER")
-access_token = os.getenv("BAMBU_ACCESS_TOKEN")
-user_id = os.getenv("USER_ID")
-bambu_ip = os.getenv("BAMBU_IP")
-
-# Set up MQTT client
-mqtt_client = MQTT.MQTT(
-    broker=bambu_broker,
-    port=8883,
-    username=user_id,
-    password=access_token,
-    socket_pool=pool,
-    ssl_context=ssl_context,
-    is_ssl=True,
-)
+BAMBU_BROKER = os.getenv("BAMBU_BROKER")
+ACCESS_TOKEN = os.getenv("BAMBU_ACCESS_TOKEN")
+USER_ID = os.getenv("USER_ID")
+BAMBU_IP = os.getenv("BAMBU_IP")
 
 
 class PrinterStatus:
@@ -227,11 +212,25 @@ class BambuPrinter:
     """
 
     def __init__(self, mqtt_client, serial_number, response_timeout=10):
+        pool = adafruit_connection_manager.get_radio_socketpool(wifi.radio)
+        ssl_context = adafruit_connection_manager.get_radio_ssl_context(wifi.radio)
+
+        # Set up MQTT client
+        mqtt_client = MQTT.MQTT(
+            broker=BAMBU_BROKER,
+            port=8883,
+            username=USER_ID,
+            password=ACCESS_TOKEN,
+            socket_pool=pool,
+            ssl_context=ssl_context,
+            is_ssl=True,
+        )
+
         self._mqtt = mqtt_client
         self._serial = serial_number
         self._response_timeout = response_timeout
-        self._report_topic = "device/{}/report".format(serial_number)
-        self._request_topic = "device/{}/request".format(serial_number)
+        self._report_topic = f"device/{serial_number}/report"
+        self._request_topic = f"device/{serial_number}/request"
         self._last_response = None
 
         self._mqtt.on_connect = self._on_connect
@@ -266,7 +265,7 @@ class BambuPrinter:
 
     def connect(self):
         """Establish the MQTT connection to the printer."""
-        print(f"Connecting to Bambu printer at {bambu_ip}...")
+        print(f"Connecting to Bambu printer at {BAMBU_IP}...")
         self._mqtt.connect()
 
     def loop(self):
