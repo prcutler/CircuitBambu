@@ -1,18 +1,19 @@
 import os
 import time
 
-import adafruit_connection_manager
 import board
 import busio
 import displayio
 import terminalio
 import wifi
 import dotclockframebuffer
+import vectorio
 from framebufferio import FramebufferDisplay
 from adafruit_display_text import label
-from digitalio import DigitalInOut
 
-import bambulabs
+import bambulabs as bl
+
+# ---- Display hardware init -------------------------------------------------
 
 displayio.release_displays()
 
@@ -88,193 +89,164 @@ i2c.deinit()
 fb = dotclockframebuffer.DotClockFramebuffer(**tft_pins, **tft_timings)
 display = FramebufferDisplay(fb, auto_refresh=True)
 
-COLOR_WHITE = 0xFFFFFF
-COLOR_GREEN = 0x00FF00
+# ---- UI layout -------------------------------------------------------------
+
+COLOR_WHITE  = 0xFFFFFF
+COLOR_GREEN  = 0x00FF00
 COLOR_YELLOW = 0xFFFF00
-COLOR_CYAN = 0x00FFFF
+COLOR_CYAN   = 0x00FFFF
 COLOR_ORANGE = 0xFF8800
-COLOR_GRAY = 0x888888
-COLOR_BG = 0x000000
+COLOR_GRAY   = 0x888888
+COLOR_BG     = 0x000000
 
 main_group = displayio.Group()
 
 bg_bitmap = displayio.Bitmap(480, 480, 1)
 bg_palette = displayio.Palette(1)
 bg_palette[0] = COLOR_BG
-bg_sprite = displayio.TileGrid(bg_bitmap, pixel_shader=bg_palette)
-main_group.append(bg_sprite)
+main_group.append(displayio.TileGrid(bg_bitmap, pixel_shader=bg_palette))
 
-title_label = label.Label(
+main_group.append(label.Label(
     terminalio.FONT, text="Bambu Printer", color=COLOR_GREEN,
-    anchor_point=(0.5, 0), anchored_position=(240, 30), scale=3
-)
-main_group.append(title_label)
+    anchor_point=(0.5, 0), anchored_position=(240, 30), scale=3,
+))
 
 LABEL_DEFS = [
-    ("state", "State: Connecting...", COLOR_WHITE, 100),
-    ("progress", "Progress: --", COLOR_CYAN, 150),
-    ("remaining", "Remaining: --", COLOR_YELLOW, 200),
-    ("nozzle", "Nozzle: --", COLOR_ORANGE, 250),
-    ("bed", "Bed: --", COLOR_ORANGE, 300),
-    ("layer", "Layer: --", COLOR_GRAY, 350),
-    ("file", "", COLOR_GRAY, 400),
+    ("state",     "State: Connecting...", COLOR_WHITE,  100),
+    ("progress",  "Progress: --",         COLOR_CYAN,   150),
+    ("remaining", "Remaining: --",        COLOR_YELLOW, 200),
+    ("nozzle",    "Nozzle: --",           COLOR_ORANGE, 250),
+    ("bed",       "Bed: --",              COLOR_ORANGE, 300),
+    ("layer",     "Layer: --",            COLOR_GRAY,   350),
+    ("file",      "",                     COLOR_GRAY,   400),
 ]
 
 labels = {}
 for name, default_text, color, y_pos in LABEL_DEFS:
     lbl = label.Label(
         terminalio.FONT, text=default_text, color=color,
-        anchor_point=(0, 0), anchored_position=(40, y_pos), scale=2
+        anchor_point=(0, 0), anchored_position=(40, y_pos), scale=2,
     )
     main_group.append(lbl)
     labels[name] = lbl
 
 display.root_group = main_group
 
-BAR_X = 40
-BAR_Y = 440
-BAR_W = 400
-BAR_H = 20
+# Progress bar
+BAR_X, BAR_Y, BAR_W, BAR_H = 40, 440, 400, 20
 
 bar_outline = displayio.Bitmap(BAR_W, BAR_H, 1)
 bar_outline_palette = displayio.Palette(1)
 bar_outline_palette[0] = COLOR_GRAY
-bar_outline_tg = displayio.TileGrid(bar_outline, pixel_shader=bar_outline_palette, x=BAR_X, y=BAR_Y)
-main_group.append(bar_outline_tg)
+main_group.append(displayio.TileGrid(bar_outline, pixel_shader=bar_outline_palette, x=BAR_X, y=BAR_Y))
 
-bar_fill = displayio.Bitmap(1, BAR_H - 4, 1)
 bar_fill_palette = displayio.Palette(1)
 bar_fill_palette[0] = COLOR_GREEN
-bar_fill_tg = displayio.TileGrid(bar_fill, pixel_shader=bar_fill_palette, x=BAR_X + 2, y=BAR_Y + 2)
-main_group.append(bar_fill_tg)
+bar_fill_rect = vectorio.Rectangle(
+    pixel_shader=bar_fill_palette, width=1, height=BAR_H - 4,
+    x=BAR_X + 2, y=BAR_Y + 2,
+)
+main_group.append(bar_fill_rect)
 
 
 def update_progress_bar(percent):
-    fill_w = max(1, int((BAR_W - 4) * percent / 100))
-    bar_fill_tg.bitmap = displayio.Bitmap(fill_w, BAR_H - 4, 1)
-    bar_fill_tg.bitmap.fill(0)
+    bar_fill_rect.width = max(1, int((BAR_W - 4) * percent / 100))
 
+
+# ---- Printer status display ------------------------------------------------
 
 STATE_MAP = {
-    "IDLE": "Idle",
+    "IDLE":    "Idle",
     "RUNNING": "Printing",
-    "PAUSE": "Paused",
-    "FINISH": "Finished",
+    "PAUSE":   "Paused",
+    "FINISH":  "Finished",
     "PREPARE": "Preparing",
-    "FAILED": "Failed",
+    "FAILED":  "Failed",
     "SLICING": "Slicing",
 }
-
-print("Connecting to AP...")
-wifi.radio.connect(
-    os.getenv("CIRCUITPY_WIFI_SSID"), os.getenv("CIRCUITPY_WIFI_PASSWORD")
-)
-print(f"Connected to {os.getenv('CIRCUITPY_WIFI_SSID')}")
-print(f"My IP address: {wifi.radio.ipv4_address}")
-
-serial_number = os.getenv("BAMBU_SERIAL")
-printer = bambulabs.BambuPrinter(bambulabs.mqtt_client, serial_number)
-
-
-def on_connect(client, userdata, flags, rc):
-    print("Connected to Bambu printer MQTT broker")
-    labels["state"].text = "State: Connected"
-    request_pushall()
-
-
-def on_disconnect(client, userdata, rc):
-    print("Disconnected from MQTT broker")
-    labels["state"].text = "State: Disconnected"
-
-
-def request_pushall():
-    status = printer.pushall()
-    if status:
-        update_display(status)
 
 
 def update_display(status):
     raw_state = status.gcode_state
     if raw_state:
-        friendly = STATE_MAP.get(raw_state, raw_state)
-        labels["state"].text = f"State: {friendly}"
-        print(f"  State: {friendly}")
+        labels["state"].text = f"State: {STATE_MAP.get(raw_state, raw_state)}"
 
     pct = status.print_percentage
     if pct is not None:
         labels["progress"].text = f"Progress: {pct}%"
         update_progress_bar(pct)
-        print(f"  Progress: {pct}%")
 
     mins = status.remaining_time
     if mins is not None:
-        hours = mins // 60
-        remainder = mins % 60
+        hours, remainder = divmod(mins, 60)
         if hours > 0:
             labels["remaining"].text = f"Remaining: {hours}h {remainder}m"
         else:
             labels["remaining"].text = f"Remaining: {remainder}m"
-        print(f"  Remaining: {mins} min")
 
-    nozzle_temp = status.nozzle_temperature
-    if nozzle_temp is not None:
+    nozzle = status.nozzle_temperature
+    if nozzle is not None:
         target = status.nozzle_temperature_target
-        if target:
-            labels["nozzle"].text = f"Nozzle: {nozzle_temp}/{target}C"
-        else:
-            labels["nozzle"].text = f"Nozzle: {nozzle_temp}C"
-        print(f"  Nozzle: {nozzle_temp}C")
+        labels["nozzle"].text = f"Nozzle: {nozzle}/{target}C" if target else f"Nozzle: {nozzle}C"
 
-    bed_temp = status.bed_temperature
-    if bed_temp is not None:
+    bed = status.bed_temperature
+    if bed is not None:
         target = status.bed_temperature_target
-        if target:
-            labels["bed"].text = f"Bed: {bed_temp}/{target}C"
-        else:
-            labels["bed"].text = f"Bed: {bed_temp}C"
-        print(f"  Bed: {bed_temp}C")
+        labels["bed"].text = f"Bed: {bed}/{target}C" if target else f"Bed: {bed}C"
 
-    current_layer = status.current_layer
-    if current_layer is not None:
-        total = status.total_layers
-        labels["layer"].text = f"Layer: {current_layer}/{total}"
-        print(f"  Layer: {current_layer}/{total}")
+    layer = status.current_layer
+    if layer is not None:
+        labels["layer"].text = f"Layer: {layer}/{status.total_layers}"
 
     filename = status.gcode_file
     if filename:
-        if len(filename) > 30:
-            filename = filename[:27] + "..."
-        labels["file"].text = filename
+        labels["file"].text = filename if len(filename) <= 30 else filename[:27] + "..."
 
 
-bambulabs.mqtt_client.on_connect = on_connect
-bambulabs.mqtt_client.on_disconnect = on_disconnect
+# ---- WiFi + printer connection ---------------------------------------------
 
-print(f"Connecting to Bambu printer...")
+print("Connecting to WiFi...")
+wifi.radio.connect(os.getenv("CIRCUITPY_WIFI_SSID"), os.getenv("CIRCUITPY_WIFI_PASSWORD"))
+print(f"Connected — IP: {wifi.radio.ipv4_address}")
+
+device_id = os.getenv("DEVICE_ID")
+printer = bl.BambuPrinter(device_id)
 printer.connect()
+labels["state"].text = "State: Connected"
 
-last_status_request = time.monotonic()
+status = printer.pushall()
+if status is None:
+    print("Timed out waiting for pushall response.")
+    labels["state"].text = "State: No response"
+else:
+    update_display(status)
+
+# ---- Main loop -------------------------------------------------------------
+
 STATUS_INTERVAL = 30
+last_poll = time.monotonic()
 
 while True:
     try:
         printer.loop()
     except Exception as e:
-        print(f"MQTT loop error: {e}")
+        print(f"MQTT error: {e}")
         labels["state"].text = "State: Reconnecting..."
         try:
-            bambulabs.mqtt_client.reconnect()
+            printer.connect()
+            labels["state"].text = "State: Connected"
         except Exception as re:
             print(f"Reconnect failed: {re}")
             labels["state"].text = "State: Connection lost"
             time.sleep(5)
 
     now = time.monotonic()
-    if now - last_status_request >= STATUS_INTERVAL:
-        try:
-            request_pushall()
-        except Exception as e:
-            print(f"Status request error: {e}")
-        last_status_request = now
+    if now - last_poll >= STATUS_INTERVAL:
+        status = printer.pushall()
+        if status is not None:
+            update_display(status)
+        else:
+            print("Timed out waiting for pushall response.")
+        last_poll = now
 
     time.sleep(0.1)
