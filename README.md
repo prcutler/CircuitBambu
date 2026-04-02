@@ -7,9 +7,15 @@
 # CircuitBambu
 Monitor your Bambu Labs 3D printer using CircuitPython
 
-This repository is a proof of concept and work in progress with the goal of monitoring your Bambu Labs printer from a microcontroller running CircuitPython and using MQTT.
+CircuitBambu requires the `circuitpyhon-bambulabs` library.  This library returns the JSON information from your printer in an easy to use format allowing you to build a user interface for your microcontroller and display like the one below. To install via circup:
 
-Longer term, I hope to create a CircuitPython library for Bambu Labs printers.
+`circup install bambulabs`
+
+## Example
+
+`qualia.py` includes an example built on the [circuitpython-bambulabs library](https://github.com/prcutler/CircuitPython_bambulabs/).
+
+![Qualia displaying showing Bambu Labs printer stats in 4 quadrants](qualia-display.jpeg)
 
 ## MQTT Credentials
 
@@ -33,6 +39,7 @@ To access your credentials:
 - `device/{DEVICE_ID}/request`
 
 # References
+
 Documentation adapted from a [gist by syuchan10005](https://gist.github.com/syuchan1005/9aee026ff77cf9745950de188b26346c)
 https://github.com/Doridian/OpenBambuAPI/blob/main/mqtt.md
 https://github.com/Doridian/OpenBambuAPI/blob/main/cloud-http.md
