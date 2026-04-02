@@ -5,9 +5,9 @@ import board
 import busio
 import displayio
 import terminalio
+import vectorio
 import wifi
 import dotclockframebuffer
-import vectorio
 from framebufferio import FramebufferDisplay
 from adafruit_display_text import label
 
@@ -89,71 +89,51 @@ i2c.deinit()
 fb = dotclockframebuffer.DotClockFramebuffer(**tft_pins, **tft_timings)
 display = FramebufferDisplay(fb, auto_refresh=True)
 
-# ---- UI layout -------------------------------------------------------------
+# ---- Colors ----------------------------------------------------------------
 
-COLOR_WHITE  = 0xFFFFFF
-COLOR_GREEN  = 0x00FF00
-COLOR_YELLOW = 0xFFFF00
-COLOR_CYAN   = 0x00FFFF
-COLOR_ORANGE = 0xFF8800
-COLOR_GRAY   = 0x888888
-COLOR_BG     = 0x000000
+COLOR_BG      = 0x000000
+COLOR_WHITE   = 0xFFFFFF
+COLOR_GRAY    = 0x444444
+COLOR_DIVIDER = 0x333333
+COLOR_GREEN   = 0x00FF00
+COLOR_CYAN    = 0x00FFFF    # progress
+COLOR_ORANGE  = 0xFF6600    # nozzle
+COLOR_RED     = 0xFF2200    # bed
+COLOR_BLUE    = 0x0088FF    # fan
 
-main_group = displayio.Group()
+# ---- Screen layout ---------------------------------------------------------
+#
+#  480 x 480 px total:
+#
+#   ┌────────────────────────────────────┐  y=0
+#   │  Status: Printing    ETA: 1h 23m  │  HEADER (48px)
+#   ├──────────────────┬─────────────────┤  y=48
+#   │   PROGRESS       │   NOZZLE        │
+#   │                  │                 │  each quadrant 200px tall
+#   ├──────────────────┼─────────────────┤  y=248
+#   │   BED            │   FAN           │
+#   │                  │                 │
+#   ├────────────────────────────────────┤  y=448
+#   │  Layer: 112 / 177                  │  FOOTER (32px)
+#   └────────────────────────────────────┘  y=480
 
-bg_bitmap = displayio.Bitmap(480, 480, 1)
-bg_palette = displayio.Palette(1)
-bg_palette[0] = COLOR_BG
-main_group.append(displayio.TileGrid(bg_bitmap, pixel_shader=bg_palette))
+HEADER_H = 48
+FOOTER_H = 32
+QW, QH   = 240, 200
+BAR_W, BAR_H   = 200, 24
+BAR_INNER_W    = BAR_W - 4
+BAR_INNER_H    = BAR_H - 4
 
-main_group.append(label.Label(
-    terminalio.FONT, text="Bambu Printer", color=COLOR_GREEN,
-    anchor_point=(0.5, 0), anchored_position=(240, 30), scale=3,
-))
+QUAD_ROW1_Y = HEADER_H               # 48
+QUAD_ROW2_Y = HEADER_H + QH          # 248
+FOOTER_Y    = HEADER_H + QH * 2      # 448
 
-LABEL_DEFS = [
-    ("state",     "State: Connecting...", COLOR_WHITE,  100),
-    ("progress",  "Progress: --",         COLOR_CYAN,   150),
-    ("remaining", "Remaining: --",        COLOR_YELLOW, 200),
-    ("nozzle",    "Nozzle: --",           COLOR_ORANGE, 250),
-    ("bed",       "Bed: --",              COLOR_ORANGE, 300),
-    ("layer",     "Layer: --",            COLOR_GRAY,   350),
-    ("file",      "",                     COLOR_GRAY,   400),
-]
-
-labels = {}
-for name, default_text, color, y_pos in LABEL_DEFS:
-    lbl = label.Label(
-        terminalio.FONT, text=default_text, color=color,
-        anchor_point=(0, 0), anchored_position=(40, y_pos), scale=2,
-    )
-    main_group.append(lbl)
-    labels[name] = lbl
-
-display.root_group = main_group
-
-# Progress bar
-BAR_X, BAR_Y, BAR_W, BAR_H = 40, 440, 400, 20
-
-bar_outline = displayio.Bitmap(BAR_W, BAR_H, 1)
-bar_outline_palette = displayio.Palette(1)
-bar_outline_palette[0] = COLOR_GRAY
-main_group.append(displayio.TileGrid(bar_outline, pixel_shader=bar_outline_palette, x=BAR_X, y=BAR_Y))
-
-bar_fill_palette = displayio.Palette(1)
-bar_fill_palette[0] = COLOR_GREEN
-bar_fill_rect = vectorio.Rectangle(
-    pixel_shader=bar_fill_palette, width=1, height=BAR_H - 4,
-    x=BAR_X + 2, y=BAR_Y + 2,
-)
-main_group.append(bar_fill_rect)
-
-
-def update_progress_bar(percent):
-    bar_fill_rect.width = max(1, int((BAR_W - 4) * percent / 100))
-
-
-# ---- Printer status display ------------------------------------------------
+ORIGINS = {
+    "progress": (0,   QUAD_ROW1_Y),
+    "nozzle":   (240, QUAD_ROW1_Y),
+    "bed":      (0,   QUAD_ROW2_Y),
+    "fan":      (240, QUAD_ROW2_Y),
+}
 
 STATE_MAP = {
     "IDLE":    "Idle",
@@ -165,42 +145,179 @@ STATE_MAP = {
     "SLICING": "Slicing",
 }
 
+# ---- Build display group ---------------------------------------------------
+
+main_group = displayio.Group()
+
+# Background
+bg_bitmap = displayio.Bitmap(480, 480, 1)
+bg_palette = displayio.Palette(1)
+bg_palette[0] = COLOR_BG
+main_group.append(displayio.TileGrid(bg_bitmap, pixel_shader=bg_palette))
+
+# Divider palette (reused for all lines)
+div_palette = displayio.Palette(1)
+div_palette[0] = COLOR_DIVIDER
+
+# Horizontal divider: header / quadrants
+main_group.append(displayio.TileGrid(
+    displayio.Bitmap(480, 2, 1), pixel_shader=div_palette, x=0, y=HEADER_H - 2,
+))
+# Horizontal divider: quadrant rows
+main_group.append(displayio.TileGrid(
+    displayio.Bitmap(480, 2, 1), pixel_shader=div_palette, x=0, y=QUAD_ROW2_Y - 1,
+))
+# Horizontal divider: quadrants / footer
+main_group.append(displayio.TileGrid(
+    displayio.Bitmap(480, 2, 1), pixel_shader=div_palette, x=0, y=FOOTER_Y - 1,
+))
+# Vertical divider between columns
+main_group.append(displayio.TileGrid(
+    displayio.Bitmap(2, QH * 2, 1), pixel_shader=div_palette, x=239, y=HEADER_H,
+))
+
+# ---- Header labels ---------------------------------------------------------
+
+status_lbl = label.Label(
+    terminalio.FONT, text="Status: --", color=COLOR_GREEN,
+    anchor_point=(0, 0.5), anchored_position=(12, HEADER_H // 2), scale=2,
+)
+main_group.append(status_lbl)
+
+eta_lbl = label.Label(
+    terminalio.FONT, text="ETA: --", color=COLOR_WHITE,
+    anchor_point=(1, 0.5), anchored_position=(468, HEADER_H // 2), scale=2,
+)
+main_group.append(eta_lbl)
+
+# ---- Footer label ----------------------------------------------------------
+
+layer_lbl = label.Label(
+    terminalio.FONT, text="Layer: --", color=COLOR_WHITE,
+    anchor_point=(0.5, 0.5), anchored_position=(240, FOOTER_Y + FOOTER_H // 2), scale=2,
+)
+main_group.append(layer_lbl)
+
+# ---- Quadrant builder ------------------------------------------------------
+
+def make_quadrant(title, color, ox, oy):
+    """Add a titled quadrant with value, sub-label, and progress bar to main_group.
+    Returns (value_lbl, sub_lbl, bar_rect).
+    """
+    main_group.append(label.Label(
+        terminalio.FONT, text=title, color=color,
+        anchor_point=(0.5, 0), anchored_position=(ox + QW // 2, oy + 8), scale=2,
+    ))
+    value_lbl = label.Label(
+        terminalio.FONT, text="--", color=COLOR_WHITE,
+        anchor_point=(0.5, 0), anchored_position=(ox + QW // 2, oy + 48), scale=3,
+    )
+    main_group.append(value_lbl)
+
+    sub_lbl = label.Label(
+        terminalio.FONT, text="", color=COLOR_GRAY,
+        anchor_point=(0.5, 0), anchored_position=(ox + QW // 2, oy + 112), scale=2,
+    )
+    main_group.append(sub_lbl)
+
+    bar_ox = ox + (QW - BAR_W) // 2
+    bar_oy = oy + 148
+
+    outline_pal = displayio.Palette(1)
+    outline_pal[0] = COLOR_GRAY
+    main_group.append(displayio.TileGrid(
+        displayio.Bitmap(BAR_W, BAR_H, 1), pixel_shader=outline_pal, x=bar_ox, y=bar_oy,
+    ))
+
+    fill_pal = displayio.Palette(1)
+    fill_pal[0] = color
+    bar_rect = vectorio.Rectangle(
+        pixel_shader=fill_pal, width=1, height=BAR_INNER_H,
+        x=bar_ox + 2, y=bar_oy + 2,
+    )
+    main_group.append(bar_rect)
+
+    return value_lbl, sub_lbl, bar_rect
+
+
+progress_value, progress_sub, progress_bar = make_quadrant(
+    "Progress", COLOR_CYAN, *ORIGINS["progress"]
+)
+nozzle_value, nozzle_sub, nozzle_bar = make_quadrant(
+    "Nozzle", COLOR_ORANGE, *ORIGINS["nozzle"]
+)
+bed_value, bed_sub, bed_bar = make_quadrant(
+    "Bed", COLOR_RED, *ORIGINS["bed"]
+)
+fan_value, fan_sub, fan_bar = make_quadrant(
+    "Fan", COLOR_BLUE, *ORIGINS["fan"]
+)
+
+display.root_group = main_group
+
+# ---- Update helpers --------------------------------------------------------
+
+NOZZLE_MAX = 250
+BED_MAX    = 65
+
+
+def _bar_width(pct):
+    return max(1, int(BAR_INNER_W * min(pct, 100) / 100))
+
+
+def _fmt_eta(mins):
+    if mins is None:
+        return "ETA: --"
+    hours, remainder = divmod(mins, 60)
+    if hours > 0:
+        return f"ETA: {hours}h {remainder}m"
+    return f"ETA: {remainder}m"
+
 
 def update_display(status):
+    # Header: status + ETA
     raw_state = status.gcode_state
     if raw_state:
-        labels["state"].text = f"State: {STATE_MAP.get(raw_state, raw_state)}"
+        status_lbl.text = f"Status: {STATE_MAP.get(raw_state, raw_state)}"
+    eta_lbl.text = _fmt_eta(status.remaining_time)
 
+    # Footer: layers
+    layer = status.current_layer
+    total = status.total_layers
+    if layer is not None and total is not None:
+        layer_lbl.text = f"Layer: {layer} / {total}"
+
+    # Progress quadrant
     pct = status.print_percentage
     if pct is not None:
-        labels["progress"].text = f"Progress: {pct}%"
-        update_progress_bar(pct)
+        progress_value.text = f"{pct}%"
+        progress_sub.text = ""
+        progress_bar.width = _bar_width(pct)
 
-    mins = status.remaining_time
-    if mins is not None:
-        hours, remainder = divmod(mins, 60)
-        if hours > 0:
-            labels["remaining"].text = f"Remaining: {hours}h {remainder}m"
-        else:
-            labels["remaining"].text = f"Remaining: {remainder}m"
-
+    # Nozzle quadrant
     nozzle = status.nozzle_temperature
     if nozzle is not None:
-        target = status.nozzle_temperature_target
-        labels["nozzle"].text = f"Nozzle: {nozzle}/{target}C" if target else f"Nozzle: {nozzle}C"
+        target = status.nozzle_temperature_target or 0
+        nozzle_value.text = f"{nozzle}C"
+        nozzle_sub.text = f"target {target}C" if target else ""
+        nozzle_bar.width = _bar_width(nozzle / NOZZLE_MAX * 100)
 
+    # Bed quadrant
     bed = status.bed_temperature
     if bed is not None:
-        target = status.bed_temperature_target
-        labels["bed"].text = f"Bed: {bed}/{target}C" if target else f"Bed: {bed}C"
+        target = status.bed_temperature_target or 0
+        bed_value.text = f"{bed}C"
+        bed_sub.text = f"target {target}C" if target else ""
+        bed_bar.width = _bar_width(bed / BED_MAX * 100)
 
-    layer = status.current_layer
-    if layer is not None:
-        labels["layer"].text = f"Layer: {layer}/{status.total_layers}"
-
-    filename = status.gcode_file
-    if filename:
-        labels["file"].text = filename if len(filename) <= 30 else filename[:27] + "..."
+    # Fan quadrant
+    fan = status.part_fan_speed
+    if fan is not None:
+        fan = int(fan)
+        fan_pct = int(fan / 255 * 100)
+        fan_value.text = f"{fan_pct}%"
+        fan_sub.text = f"speed {fan}/255"
+        fan_bar.width = _bar_width(fan_pct)
 
 
 # ---- WiFi + printer connection ---------------------------------------------
@@ -212,12 +329,12 @@ print(f"Connected — IP: {wifi.radio.ipv4_address}")
 device_id = os.getenv("DEVICE_ID")
 printer = bl.BambuPrinter(device_id)
 printer.connect()
-labels["state"].text = "State: Connected"
+status_lbl.text = "Status: Connected"
 
 status = printer.pushall()
 if status is None:
     print("Timed out waiting for pushall response.")
-    labels["state"].text = "State: No response"
+    status_lbl.text = "Status: No response"
 else:
     update_display(status)
 
@@ -231,13 +348,13 @@ while True:
         printer.loop()
     except Exception as e:
         print(f"MQTT error: {e}")
-        labels["state"].text = "State: Reconnecting..."
+        status_lbl.text = "Status: Reconnecting"
         try:
             printer.connect()
-            labels["state"].text = "State: Connected"
+            status_lbl.text = "Status: Connected"
         except Exception as re:
             print(f"Reconnect failed: {re}")
-            labels["state"].text = "State: Connection lost"
+            status_lbl.text = "Status: Lost"
             time.sleep(5)
 
     now = time.monotonic()
